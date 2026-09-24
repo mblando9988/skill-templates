@@ -1,0 +1,13 @@
+{
+  "name": "skill-templates-yaml-bridge",
+  "private": true,
+  "description": "Pinned YAML parser for the skill-templates scripts: eemeli/yaml, the parser npm builds of Claude Code use. Bun.YAML (native builds) needs no install.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  }
+}
