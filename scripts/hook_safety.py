@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -81,6 +81,7 @@ class HookContext:
     base_dir: Optional[Path] = None
     project_dir: Optional[Path] = None
     plugin_root: Optional[Path] = None
+    skill_dirs: Dict[str, Path] = field(default_factory=dict)   # known skills, for .claude/skills/<name>/ paths
 
 
 def guess_project_dir(file_path: Path) -> Optional[Path]:
@@ -266,9 +267,14 @@ _INSTALLED_SKILL_RE = re.compile(
 def _resolve(token: str, ctx: HookContext) -> Optional[Tuple[Path, str]]:
     """Map a script token to a local path, or None when it cannot be known."""
     installed = _INSTALLED_SKILL_RE.match(token)
-    if installed and ctx.base_dir is not None and ctx.base_dir.name == installed.group(1):
-        # The skill's own install path: check the file inside this skill directory.
-        return ctx.base_dir / installed.group(2), " in the skill directory"
+    if installed:
+        # A skill's install path: check the file inside that skill's directory
+        # (this skill, or a sibling skill an agent borrows a script from).
+        name = installed.group(1)
+        skill_dir = ctx.base_dir if ctx.base_dir is not None and ctx.base_dir.name == name \
+            else ctx.skill_dirs.get(name)
+        if skill_dir is not None:
+            return skill_dir / installed.group(2), f" in the {name} skill"
 
     def sub(name: str, value: Optional[Path]) -> Optional[str]:
         return None if value is None else str(value)

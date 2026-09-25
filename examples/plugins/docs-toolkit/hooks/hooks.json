@@ -1,0 +1,18 @@
+{
+  "description": "Keep the docs server read-only: block its write tools even if a rule allows them.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_docs-toolkit_docs__(write_file|edit_file|move_file|create_directory)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/block_docs_writes.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

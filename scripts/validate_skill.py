@@ -137,9 +137,18 @@ def is_plugin_root(path: Path) -> bool:
 
 
 def enclosing_plugin(path: Path) -> Optional[Path]:
-    for parent in [path] + list(path.resolve().parents):
+    """The plugin whose components include path (a file or its directory), if any.
+
+    Only files a plugin actually loads count: its root SKILL.md and anything
+    under its skills/, agents/, commands/ or hooks/ directories.
+    """
+    path = path.resolve()
+    for parent in [path] + list(path.parents):
         if parent.is_dir() and is_plugin_root(parent):
-            return parent
+            rel = path.relative_to(parent).parts
+            if not rel or rel[0] in ("skills", "agents", "commands", "hooks") or rel == ("SKILL.md",):
+                return parent
+            return None
     return None
 
 
@@ -171,7 +180,7 @@ def discover(paths: List[Path], opts: Options) -> Tuple[List[Target], Dict[Path,
         resolved = path.resolve()
         if resolved in targets:
             return
-        root = enclosing_plugin(resolved.parent)
+        root = enclosing_plugin(resolved)
         info = plugin_for(root)
         at_root = info is not None and kind == "skill" and resolved.parent == info.root
         targets[resolved] = Target(path=path, kind=kind, plugin=info, plugin_root_skill=at_root)
@@ -180,7 +189,7 @@ def discover(paths: List[Path], opts: Options) -> Tuple[List[Target], Dict[Path,
         if raw.is_file():
             if raw.name == "plugin.json" and raw.parent.name == ".claude-plugin":
                 plugin_for(raw.parent.parent)
-                _collect_dir(raw.parent.parent, add, plugin_for)
+                _collect_plugin(raw.parent.parent, add)
                 continue
             kind = opts.kind if opts.kind != "auto" else infer_kind(raw)
             if raw.suffix.lower() != ".md":
@@ -199,8 +208,28 @@ def discover(paths: List[Path], opts: Options) -> Tuple[List[Target], Dict[Path,
                 continue
             if is_plugin_root(raw):
                 plugin_for(raw)
-            _collect_dir(raw, add, plugin_for)
+                _collect_plugin(raw, add)
+            else:
+                _collect_dir(raw, add, plugin_for)
     return list(targets.values()), plugins, problems
+
+
+def _collect_plugin(root: Path, add) -> None:
+    """Collect only what Claude Code loads from a plugin: its component folders."""
+    if (root / "SKILL.md").is_file() and not (root / "skills").is_dir():
+        add(root / "SKILL.md", "skill")
+    for folder, kind in (("skills", "skill"), ("agents", "agent"), ("commands", "command")):
+        base = root / folder
+        if not base.is_dir():
+            continue
+        for path in iter_files([base]):
+            if path.suffix.lower() != ".md":
+                continue
+            if kind == "skill":
+                if path.name.lower() == "skill.md":
+                    add(path, "skill")
+            else:
+                add(path, kind)
 
 
 def _collect_dir(root: Path, add, plugin_for) -> None:
@@ -422,6 +451,8 @@ def check_tool_rules(chk: Checker, key: str, value: Any, role: str) -> List[str]
     seen = set()
     plugin = chk.t.plugin
     for rule in rules:
+        if chk.opts.allow_placeholders and "{{" in rule:
+            continue
         if rule in seen:
             chk.add("info", "tools.duplicate", f"'{rule}' is listed twice in '{key}'", line)
             continue
@@ -504,6 +535,8 @@ def _check_rule_specifier(chk: Checker, key: str, tool: str, spec_text: str, lin
 
 
 def _check_placeholder_path(chk: Checker, name: str, rest: str, line: Optional[int], where: str) -> None:
+    if chk.opts.allow_placeholders:
+        return                     # templates point at files that do not exist yet
     root = chk.base_dir if name == "CLAUDE_SKILL_DIR" else (chk.t.plugin.root if chk.t.plugin else None)
     if root is None:
         return
@@ -562,7 +595,10 @@ def check_hooks(chk: Checker, hooks: Any, owner: str, prefix: Tuple[Any, ...] = 
         kind="plugin-hooks" if owner == "plugin-hooks" else owner,
         base_dir=chk.base_dir,
         project_dir=hook_safety.guess_project_dir(chk.t.path),
-        plugin_root=chk.t.plugin.root if chk.t.plugin else None)
+        plugin_root=chk.t.plugin.root if chk.t.plugin else None,
+        skill_dirs={name: t.path.resolve().parent for name, t in chk.index.skills.items()})
+    if owner in ("skill", "command"):
+        _check_session_scope(chk, hooks, at(*prefix))
     for event, groups in hooks.items():
         path = prefix + (event,)
         line = at(*path)
@@ -609,6 +645,19 @@ def check_hooks(chk: Checker, hooks: Any, owner: str, prefix: Tuple[Any, ...] = 
             for hi, handler in enumerate(handlers):
                 hpath = gpath + ("hooks", hi)
                 _check_handler(chk, event, handler, owner, hpath, at, ctx)
+
+
+def _check_session_scope(chk: Checker, hooks: Dict[str, Any], line: Optional[int]) -> None:
+    """Skill hooks outlive the task: they stay on the main thread for the whole session."""
+    lasting = sorted({event for event, _gi, _hi, handler in hook_safety.iter_handlers(hooks)
+                      if handler.get("once") is not True})
+    if lasting:
+        chk.add("warning", "hooks.session-scope",
+                f"hooks in {chk.t.kind} frontmatter stay registered on the main conversation for the rest of "
+                f"the session once it runs, so {', '.join(lasting)} keeps firing on every later matching "
+                "call, long after this task", line,
+                hint="move the hooks into a subagent's frontmatter (they run only while it runs) and invoke "
+                     "it with context: fork + agent: <subagent>; or set once: true for a one-time hook")
 
 
 def _check_matcher(chk: Checker, event: str, matcher: Any, line: Optional[int]) -> None:
@@ -702,7 +751,7 @@ def _check_handler(chk: Checker, event: str, handler: Any, owner: str, hpath: Tu
 def check_skill_like(chk: Checker) -> None:
     t, fm, kind = chk.t, chk.fm, chk.t.kind
     known = spec.SKILL_FIELDS if kind == "skill" else spec.COMMAND_FIELDS
-    if kind == "skill" and t.path.name != "SKILL.md":
+    if kind == "skill" and t.path.name != "SKILL.md" and not chk.opts.allow_placeholders:
         chk.add("error", "skill.filename",
                 f"skill file is named '{t.path.name}'; Claude Code loads 'SKILL.md' (case-sensitive on Linux)",
                 1, hint="rename it to SKILL.md")
@@ -976,7 +1025,7 @@ def check_body(chk: Checker, body: str, first_line: int, data: Dict[str, Any]) -
 
 
 def _check_link(chk: Checker, target: str, line: int) -> None:
-    if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith(("#", "{{", "$")):
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith(("#", "$")) or "{{" in target:
         return
     clean = unquote(target.split("#", 1)[0].split("?", 1)[0])
     if not clean:
@@ -1038,7 +1087,8 @@ def check_agent(chk: Checker) -> None:
             chk.add("error", "agent.name-invalid",
                     f"agent name '{name}' starts with '-' or contains ':'; Claude Code skips the file",
                     chk.at("name"))
-        elif not spec.SKILL_NAME_RE.match(name):
+        elif not spec.SKILL_NAME_RE.match(name) and not (chk.opts.allow_placeholders
+                                                          and spec.PLACEHOLDER_RE.search(name)):
             chk.add("warning", "agent.name-format", f"agent name '{name}' is not lowercase-with-hyphens",
                     chk.at("name"))
         dupes = [t for t in chk.index.agents.get(name, []) if t is not chk.t and t.plugin == chk.t.plugin]
@@ -1180,7 +1230,9 @@ def check_plugin(info: PluginInfo, engines: Engines, index: Index, opts: Options
             add("error", "plugin.name", "plugin.json needs a 'name'")
         else:
             info.name = name
-            if not spec.PLUGIN_NAME_RE.match(name):
+            if opts.allow_placeholders and spec.PLACEHOLDER_RE.search(name):
+                pass
+            elif not spec.PLUGIN_NAME_RE.match(name):
                 add("error", "plugin.name-format", f"plugin name '{name}' must be kebab-case (no spaces or capitals)")
         for key, value in manifest.items():
             if key not in spec.PLUGIN_MANIFEST_FIELDS:

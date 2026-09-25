@@ -1,116 +1,113 @@
-# Skill CI - regression discipline for shared skill libraries.
+# Skill CI - check Claude Code skills, subagents and plugins on every pull request.
 #
-# Drop this file into .github/workflows/skill-ci.yml of any repository that
-# contains skills (directories with a SKILL.md). On every pull request it:
+# Drop this file into .github/workflows/skill-ci.yml of a repository that
+# contains skills (.claude/skills/*/SKILL.md), subagents (.claude/agents/*.md)
+# or plugins. It runs the skill-templates scripts:
 #
-#   1. Diffs the PR against its base branch and finds every changed skill
-#      directory (the nearest ancestor of each changed file that contains
-#      a SKILL.md).
-#   2. Fans out a matrix job per changed skill that runs SkillForge's
-#      mechanical gates:
-#        - validate_skill.py        structure, frontmatter, lint
-#        - run_skill_evals.py --static   evals/ schema + trigger keyword lint
-#                                        (CI-safe: no model calls)
-#        - check_docs_safety.py     unsafe hook-command interpolation
+#   format_skill.py --check    fails if a file is not in canonical form
+#   validate_skill.py --strict fields, hooks, tools, models, plugin rules; the
+#                              frontmatter is parsed by BOTH parsers Claude Code
+#                              ships (Bun.YAML in native builds, eemeli/yaml in
+#                              npm builds), so a skill that loads in one and not
+#                              the other fails here
+#   check_docs_safety.py       unsafe or broken hook commands in files and docs
 #
-# Action versions are pinned by MAJOR version below; bump deliberately.
+# Hardening choices:
+#   - permissions: contents: read, and no persisted git credentials.
+#   - Every action is pinned to a full commit SHA (the comment names the tag).
+#     Let Dependabot or Renovate bump them.
+#   - The scripts run from a copy you vendor into your repository
+#     (SKILL_TOOLS_DIR). Nothing is fetched and executed at CI time unless you
+#     opt in with SKILL_TOOLS_REPO plus a full 40-character commit SHA.
+#   - Paths come from the env block, never from ${{ }} interpolation inside
+#     shell scripts, so a crafted branch or file name cannot inject commands.
 
 name: skill-ci
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
-# The SkillForge repository that provides the validation scripts.
-# Point this at your fork (or a vendored copy) and pin a ref you trust.
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  SKILLFORGE_REPO: https://github.com/tripleyak/SkillForge.git
-  SKILLFORGE_REF: main
+  # Space-separated paths to check.
+  SKILL_PATHS: ".claude"
+  # Vendored copy of skill-templates/scripts (recommended): copy the scripts/
+  # folder of https://github.com/mblando9988/skill-templates here.
+  SKILL_TOOLS_DIR: ".github/skill-tools"
+  # Optional remote fallback when SKILL_TOOLS_DIR is absent. The ref MUST be a
+  # full 40-character commit SHA; tags and branches are refused.
+  SKILL_TOOLS_REPO: "https://github.com/mblando9988/skill-templates.git"
+  SKILL_TOOLS_REF: ""
+  # Bun version that parses YAML like native Claude Code builds.
+  BUN_VERSION: "1.3.11"
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Job 1: compute the matrix of changed skill directories from the git diff.
-  # -------------------------------------------------------------------------
-  changed-skills:
+  check:
     runs-on: ubuntu-latest
-    outputs:
-      skills: ${{ steps.diff.outputs.skills }}
-      any: ${{ steps.diff.outputs.any }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history so the merge-base diff against the base branch works.
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Find changed skill directories
-        id: diff
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Locate the skill tools
         shell: bash
         run: |
           set -euo pipefail
-          # Every file changed by this PR, relative to the base branch.
-          git fetch --no-tags origin "${{ github.base_ref }}"
-          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-
-          # Map each changed file to its nearest ancestor containing SKILL.md.
-          skills=$(python3 - "$changed" <<'PY'
-          import json, os, sys
-          changed = sys.argv[1].split()
-          dirs = set()
-          for path in changed:
-              d = os.path.dirname(path)
-              while True:
-                  if os.path.isfile(os.path.join(d, "SKILL.md")):
-                      dirs.add(d or ".")
-                      break
-                  if not d:
-                      break
-                  d = os.path.dirname(d)
-          print(json.dumps(sorted(dirs)))
-          PY
-          )
-          echo "skills=$skills" >> "$GITHUB_OUTPUT"
-          if [ "$skills" = "[]" ]; then
-            echo "any=false" >> "$GITHUB_OUTPUT"
-            echo "No skill directories changed - nothing to validate."
+          if [ -f "$SKILL_TOOLS_DIR/validate_skill.py" ]; then
+            tools="$SKILL_TOOLS_DIR"
           else
-            echo "any=true" >> "$GITHUB_OUTPUT"
-            echo "Changed skills: $skills"
+            if [[ ! "$SKILL_TOOLS_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::No vendored tools in $SKILL_TOOLS_DIR and SKILL_TOOLS_REF is not a 40-character commit SHA."
+              exit 1
+            fi
+            git init -q .skill-tools
+            git -C .skill-tools fetch -q --depth 1 "$SKILL_TOOLS_REPO" "$SKILL_TOOLS_REF"
+            git -C .skill-tools checkout -q FETCH_HEAD
+            test "$(git -C .skill-tools rev-parse HEAD)" = "$SKILL_TOOLS_REF"
+            tools=".skill-tools/scripts"
           fi
+          # Exact versions from the lockfile; no install scripts run.
+          npm ci --prefix "$tools" --ignore-scripts --no-audit --no-fund
+          echo "TOOLS=$tools" >> "$GITHUB_ENV"
 
-  # -------------------------------------------------------------------------
-  # Job 2: matrix - one validation job per changed skill.
-  # -------------------------------------------------------------------------
-  validate:
-    needs: changed-skills
-    if: needs.changed-skills.outputs.any == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false # report every broken skill, not just the first
-      matrix:
-        skill: ${{ fromJSON(needs.changed-skills.outputs.skills) }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Fetch SkillForge validation scripts
+      - name: Format check
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "$SKILLFORGE_REF" "$SKILLFORGE_REPO" .skillforge-tools
+          read -ra paths <<< "$SKILL_PATHS"
+          python3 "$TOOLS/format_skill.py" "${paths[@]}" --check
 
-      - name: validate_skill.py (structure, frontmatter, lint)
+      - name: Validate (both Claude Code YAML parsers)
         shell: bash
         run: |
-          python3 .skillforge-tools/scripts/validate_skill.py "${{ matrix.skill }}"
+          set -euo pipefail
+          read -ra paths <<< "$SKILL_PATHS"
+          python3 "$TOOLS/validate_skill.py" "${paths[@]}" --strict
 
-      - name: run_skill_evals.py --static (evals schema + trigger lint)
+      - name: Hook safety
         shell: bash
         run: |
-          python3 .skillforge-tools/scripts/run_skill_evals.py "${{ matrix.skill }}" --static
-
-      - name: check_docs_safety.py (unsafe hook-command interpolation)
-        shell: bash
-        run: |
-          python3 .skillforge-tools/scripts/check_docs_safety.py "${{ matrix.skill }}/SKILL.md"
+          set -euo pipefail
+          read -ra paths <<< "$SKILL_PATHS"
+          python3 "$TOOLS/check_docs_safety.py" "${paths[@]}" --strict

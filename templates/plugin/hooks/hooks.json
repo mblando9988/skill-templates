@@ -1,0 +1,18 @@
+{
+  "description": "{{What these hooks enforce while the plugin is enabled}}",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/guard.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

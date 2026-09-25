@@ -6,18 +6,23 @@ Single-file cheat sheet distilled from 11 reference notes. Use for designing, wr
 
 Keep SKILL.md under 500 lines / 1500 words. Depth goes in `references/`, runnable files in `assets/`, helpers in `scripts/`. No `<details>` blocks.
 
-Key fields:
+Key fields (full reference: `references/claude-code-frontmatter.md`):
 
 | Field | Purpose |
 |---|---|
-| `name` | lowercase-hyphens, ≤64 chars, must match directory |
+| `name` | lowercase-hyphens, ≤64 chars, must match directory (the directory is the command) |
 | `description` | trigger conditions only, third person, ≤1024 chars. No workflow summary |
-| `when_to_use` | extra routing text (combined with description cap 1536 chars) |
-| `allowed-tools` / `disallowed-tools` | scope tools while active |
-| `model` | family alias only, never dated ID (`claude-*-YYYYMMDD` rots) |
-| `context: fork` + `agent:` | run in subagent |
-| `hooks` | lifecycle hooks, active only while skill is active |
-| `argument-hint`, `arguments` | slash-menu hint, `$ARGUMENTS` access |
+| `when_to_use` | extra trigger phrases; Claude Code appends it to description (combined listing cap 1,536 chars). Not an Agent Skills field: `export_skill.py` folds it into description |
+| `argument-hint`, `arguments` | autocomplete hint (quote it: `"[issue]"`), named `$name` placeholders |
+| `allowed-tools` / `disallowed-tools` | pre-approve scoped rules for the invoking turn / remove tools. Never bare `Bash` |
+| `model`, `effort` | family alias only (`opus`, `sonnet`, `haiku`, `fable`, `inherit`); never a dated ID (`claude-*-YYYYMMDD` rots) |
+| `context: fork` + `agent:` (+ `background`) | run the body as a task in a subagent |
+| `disable-model-invocation`, `user-invocable` | `true`/`false` literals (`yes` only works on Claude Code ≥ 2.1.218) |
+| `hooks` | registered when the skill is invoked and kept on the main thread for the rest of the session (`once: true` removes a hook after its first successful run). For task-scoped enforcement, put hooks on a subagent and use `context: fork` + `agent:` |
+| `paths`, `shell` | activate only for matching files; `bash` or `powershell` for `!` injection |
+| `license`, `compatibility`, `metadata` | portable Agent Skills fields |
+
+Claude Code silently ignores misspelled fields (`allowed_tools`, `tools` in a SKILL.md). If the YAML fails to parse, the skill loads with no fields. Run `validate_skill.py`: it parses with both of Claude Code's YAML parsers (Bun.YAML, eemeli/yaml).
 
 Hooks:
 
@@ -27,12 +32,15 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: "python3 scripts/check_input.py"
+          command: python3 "${CLAUDE_PROJECT_DIR}/.claude/skills/<name>/scripts/check_input.py"
 ```
 
 - Hook command gets JSON on stdin, replies via exit code / stdout JSON. No `$TOOL_INPUT` env vars.
 - Never interpolate payload text into shell strings — parse stdin inside the script.
-- Exit 0 = allow, non-0 = block (PreToolUse).
+- Exit 0 = no objection (normal permission flow applies). Exit 2 = block, stderr goes to Claude. Any other code (including 1) = non-blocking error: the action proceeds.
+- Hooks run in the session's working directory: anchor paths with `${CLAUDE_PROJECT_DIR}` (`${CLAUDE_SKILL_DIR}` is not substituted in hook commands). A script that cannot start is a non-blocking error, so the gate is silently off.
+- Scope: a skill's hooks keep firing on the main thread for the whole session. A subagent's hooks run only while it runs. Enforce task rules with a hooked subagent that the skill forks into (`examples/skills/guarded-shell` + `examples/agents/guarded-operator.md`).
+- Template: `templates/hook-script-template.py` (fails closed on bad input).
 
 Placement: personal `~/.claude/skills/<name>/`, project `.claude/skills/`.
 
@@ -131,7 +139,7 @@ Exit codes: 0 success, 1 fail, 2 bad args, 3 file missing, 10 validation fail, 1
 
 Document every script in SKILL.md with purpose + usage + exit codes.
 
-Hooks + scripts: PreToolUse = gate, PostToolUse = verify, Stop = cleanup. Hook script parses stdin JSON, exit 0 allow / 1 block.
+Hooks + scripts: PreToolUse = gate, PostToolUse = verify, Stop = cleanup. Hook script parses stdin JSON, exit 0 allow / 2 block. Exit 1 does not block.
 
 ## 8. Script Patterns — Quick Ref
 
@@ -170,9 +178,10 @@ No approval panel. Ship when lint passes + evals pass + no blocker survives.
 
 1. Mechanical (fix all ERRORs first):
 ```bash
-python3 scripts/validate_skill.py <dir>
+python3 scripts/format_skill.py <dir>
+python3 scripts/validate_skill.py <dir> --strict
 python3 scripts/check_docs_safety.py <dir>
-python3 scripts/run_skill_evals.py <dir> --static
+python3 scripts/export_skill.py <dir> --out dist/   # only for claude.ai / Skills API
 ```
 2. Behavioral: RED failures recorded, GREEN runs clear them, trigger recall/precision checked.
 3. One fresh adversarial reviewer (no shared history) charged to REFUTE:
@@ -215,3 +224,21 @@ Ship with tests:
 <skill>/evals/scenarios/01-<slug>.md  # task + baseline_failure + assertions + runs
 ```
 `--static` = CI-safe lint, `--live` = headless runs. Re-run after any edit like unit tests.
+
+## 12. Subagents and Plugins
+
+Subagent files (`.claude/agents/<name>.md`) use camelCase fields; `name` and `description` are required, or the file is skipped.
+
+| Field | Purpose |
+|---|---|
+| `tools` / `disallowedTools` | allowlist / denylist. `mcp__<server>` covers a whole server. A specifier in `disallowedTools` still removes the whole tool |
+| `skills` | preload skills' full content at startup (not skills with `disable-model-invocation: true`) |
+| `mcpServers` | `- github` reuses a configured server; `- name: {type: stdio, command: ...}` connects only for this agent |
+| `model`, `effort`, `maxTurns`, `permissionMode`, `memory`, `isolation`, `hooks` | per-agent overrides; `Stop` hooks become `SubagentStop` |
+
+Plugins bundle skills, agents, hooks and MCP servers:
+
+- Components live at the plugin root (`skills/`, `agents/`, `hooks/hooks.json`, `.mcp.json`), never inside `.claude-plugin/`.
+- Tools from a plugin's MCP server are named `mcp__plugin_<plugin>_<server>__<tool>`; `mcp__<server>__...` matches nothing.
+- Plugin agents ignore `hooks`, `mcpServers` and `permissionMode` (security): ship servers in `.mcp.json` and hooks in `hooks/hooks.json`.
+- Templates: `templates/agent-md-template.md`, `templates/plugin/`. Worked examples: `examples/agents/`, `examples/plugins/docs-toolkit/`.

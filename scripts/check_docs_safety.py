@@ -101,7 +101,7 @@ def collect(paths: Iterable[Path]) -> Tuple[List[Path], List[Path]]:
 
 
 def context_for(path: Path, kind: str) -> hook_safety.HookContext:
-    plugin = enclosing_plugin(path.resolve().parent)
+    plugin = enclosing_plugin(path.resolve())
     return hook_safety.HookContext(kind=kind, base_dir=path.resolve().parent,
                                    project_dir=hook_safety.guess_project_dir(path), plugin_root=plugin)
 
