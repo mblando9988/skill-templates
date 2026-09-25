@@ -4,8 +4,9 @@
 
 Part of the {{SKILL_OR_PLUGIN_NAME}} {{skill|plugin|agent}}.
 
-Wire it up (skill frontmatter; for plugins use hooks/hooks.json and
-"${CLAUDE_PLUGIN_ROOT}/scripts/{{SCRIPT_NAME}}.py"):
+Wire it up in a subagent's frontmatter, so the rule holds only while that
+agent works (a skill runs in it with context: fork + agent: <name>). For
+plugins use hooks/hooks.json and "${CLAUDE_PLUGIN_ROOT}/scripts/{{SCRIPT_NAME}}.py":
 
     hooks:
       {{EVENT}}:
@@ -22,6 +23,8 @@ Contract (Claude Code hooks):
           print a JSON decision (see DECISION below).
 - Allow:  exit 0 with no output. The normal permission flow still applies.
 - Exit 1 or any other code: a NON-blocking error. The action proceeds.
+- PermissionRequest ignores exit 2: only a JSON "decision" object denies
+  there, and respond() prints one for you.
 - Hooks run in the session's working directory. Never rely on relative paths.
 
 Hardening built in:
@@ -49,7 +52,8 @@ EXIT_ALLOW = 0
 EXIT_BLOCK = 2
 
 # Use exit 2 (simple, works on every version) or a JSON decision (can also
-# "ask" the user, or explain a denial). DECISION selects the style.
+# "ask" the user, or explain a denial). DECISION selects the style for
+# PreToolUse; PermissionRequest always gets a JSON decision.
 DECISION = "exit"          # "exit" | "json"
 
 
@@ -95,11 +99,21 @@ def read_event() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
 def respond(event_name: str, verdict: str, reason: Optional[str]) -> int:
     if verdict == "allow":
         return EXIT_ALLOW
-    if DECISION == "json" and event_name in ("PreToolUse", "PermissionRequest"):
+    reason = reason or "blocked by {{SCRIPT_NAME}}"
+    if event_name == "PermissionRequest":
+        # Exit 2 is not honored here; only a decision object denies. Printing
+        # nothing leaves the prompt to the user, which is what "ask" means.
+        if verdict == "deny":
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": event_name,
+                "decision": {"behavior": "deny", "message": reason},
+            }}))
+        return EXIT_ALLOW
+    if DECISION == "json" and event_name == "PreToolUse":
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": event_name,
             "permissionDecision": verdict,
-            "permissionDecisionReason": reason or "blocked by {{SCRIPT_NAME}}",
+            "permissionDecisionReason": reason,
         }}))
         return EXIT_ALLOW
     if verdict == "ask":
@@ -112,6 +126,7 @@ def main() -> int:
     event, problem = read_event()
     if event is None:
         # Fail closed: a guard that cannot read its input must not wave the call through.
+        # (PermissionRequest ignores exit 2, so the normal permission prompt decides: also safe.)
         print(f"{{SCRIPT_NAME}}: {problem}; blocked to be safe", file=sys.stderr)
         return EXIT_BLOCK
     try:

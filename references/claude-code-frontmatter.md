@@ -79,9 +79,9 @@ hooks:
 
 - **Scope decides where hooks go.** Skill hooks are registered when the skill is invoked and stay on the main conversation for the rest of the session. Subagent hooks run only while that subagent runs. Plugin `hooks/hooks.json` hooks apply whenever the plugin is enabled. For rules that belong to one task, put the hooks on a subagent and run the skill in it with `context: fork` + `agent: <subagent>`. The main thread then never builds up hook loops.
 - Command hooks get the event JSON on **stdin**. No `$TOOL_INPUT` variable exists, and `${tool_input.x}` is never substituted in commands.
-- Exit 0: no objection. Exit 2: block; stderr goes to Claude. Any other exit code: a non-blocking error, and the action proceeds.
+- Exit 0: no objection. Exit 2: block; stderr goes to Claude. Any other exit code: a non-blocking error, and the action proceeds. `PermissionRequest` is the exception: it ignores exit 2, so deny there with its JSON decision (below).
 - A script that cannot start fails the same non-blocking way, so the gate is silently off. Anchor paths with `${CLAUDE_PROJECT_DIR}` or `${CLAUDE_PLUGIN_ROOT}`, and quote them in shell form.
-- JSON decisions (exit 0): `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny" | "allow" | "ask", "permissionDecisionReason": "..."}}`.
+- JSON decisions (exit 0). PreToolUse: `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny" | "allow" | "ask", "permissionDecisionReason": "..."}}`. PermissionRequest: `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny" | "allow", "message": "..."}}}`.
 - Events with matchers: PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, SessionStart, Setup, SessionEnd, Notification, SubagentStart, SubagentStop, PreCompact, PostCompact, PreModelSwitch, PostModelSwitch, ConfigChange, DirectoryAdded, FileChanged, StopFailure, InstructionsLoaded, UserPromptExpansion, Elicitation, ElicitationResult.
 - Events without matchers: UserPromptSubmit, PostToolBatch, Stop, TeammateIdle, TaskCreated, TaskCompleted, WorktreeCreate, WorktreeRemove, MessageDisplay, CwdChanged.
 

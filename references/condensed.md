@@ -37,7 +37,7 @@ hooks:
 
 - Hook command gets JSON on stdin, replies via exit code / stdout JSON. No `$TOOL_INPUT` env vars.
 - Never interpolate payload text into shell strings — parse stdin inside the script.
-- Exit 0 = no objection (normal permission flow applies). Exit 2 = block, stderr goes to Claude. Any other code (including 1) = non-blocking error: the action proceeds.
+- Exit 0 = no objection (normal permission flow applies). Exit 2 = block, stderr goes to Claude. Any other code (including 1) = non-blocking error: the action proceeds. Exception: `PermissionRequest` ignores exit 2; deny there with JSON `hookSpecificOutput.decision.behavior: "deny"`.
 - Hooks run in the session's working directory: anchor paths with `${CLAUDE_PROJECT_DIR}` (`${CLAUDE_SKILL_DIR}` is not substituted in hook commands). A script that cannot start is a non-blocking error, so the gate is silently off.
 - Scope: a skill's hooks keep firing on the main thread for the whole session. A subagent's hooks run only while it runs. Enforce task rules with a hooked subagent that the skill forks into (`examples/skills/guarded-shell` + `examples/agents/guarded-operator.md`).
 - Template: `templates/hook-script-template.py` (fails closed on bad input).
