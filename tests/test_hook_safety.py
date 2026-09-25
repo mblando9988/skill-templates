@@ -52,6 +52,19 @@ class CommandTest(TempDirTest):
         self.write("h.py", "import sys\nsys.exit(2)\n")
         self.assertNotIn("hook.cannot-block", codes(check_command('python3 "${CLAUDE_PROJECT_DIR}/h.py"', None, "PreToolUse", ctx)))
 
+    def test_permission_request_script_needs_a_decision_object(self):
+        # PermissionRequest ignores exit 2 and permissionDecision: only decision.behavior denies.
+        ctx = self.ctx(project_dir=self.tmp)
+        self.write("p.py", "import sys\nsys.exit(2)\n")
+        self.assertIn("hook.cannot-block",
+                      codes(check_command('python3 "${CLAUDE_PROJECT_DIR}/p.py"', None, "PermissionRequest", ctx)))
+        self.write("q.py", 'print(\'{"permissionDecision": "deny"}\')\n')
+        self.assertIn("hook.cannot-block",
+                      codes(check_command('python3 "${CLAUDE_PROJECT_DIR}/q.py"', None, "PermissionRequest", ctx)))
+        self.write("r.py", 'print(\'{"hookSpecificOutput": {"decision": {"behavior": "deny"}}}\')\n')
+        self.assertNotIn("hook.cannot-block",
+                         codes(check_command('python3 "${CLAUDE_PROJECT_DIR}/r.py"', None, "PermissionRequest", ctx)))
+
     def test_installed_skill_path_resolves_to_known_skill(self):
         skill = self.tmp / "skills" / "guard"
         self.write("skills/guard/scripts/g.py", "import sys\nsys.exit(2)\n")

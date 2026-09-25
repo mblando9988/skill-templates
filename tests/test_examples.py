@@ -52,6 +52,21 @@ class TemplateTest(TempDirTest):
         self.assertEqual(hook(HOOK_TEMPLATE, b"garbage")[0], 2)
         self.assertEqual(hook(HOOK_TEMPLATE, bash("ls"))[0], 0)
 
+    def test_hook_template_denies_permission_requests_with_a_decision_object(self):
+        # PermissionRequest ignores exit 2 and permissionDecision: only decision.behavior denies.
+        request = {"hook_event_name": "PermissionRequest", "tool_name": "{{ToolName}}"}
+        code, out, _err = hook(HOOK_TEMPLATE, request)
+        self.assertEqual(code, 0)
+        output = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PermissionRequest")
+        self.assertEqual(output["decision"]["behavior"], "deny")
+        self.assertTrue(output["decision"]["message"])
+        self.assertEqual(hook(HOOK_TEMPLATE, dict(request, tool_input={})), (0, "", ""))
+        self.assertEqual(hook(HOOK_TEMPLATE, dict(request, hook_event_name="PreToolUse"))[0], 2)
+
+    def test_plugin_guard_is_the_hook_template(self):
+        self.assertEqual((ROOT / "templates/plugin/scripts/guard.py").read_bytes(), HOOK_TEMPLATE.read_bytes())
+
     def test_script_template_exit_codes_and_atomic_output(self):
         run = lambda *a: subprocess.run([sys.executable, str(SCRIPT_TEMPLATE), *map(str, a)],
                                         capture_output=True, text=True, timeout=30)

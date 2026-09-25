@@ -203,8 +203,15 @@ def check_command(command: str, args: Optional[Sequence[Any]], event: str, ctx: 
                        f"'{script}' is run directly but is not executable; the hook fails to start",
                        f"chmod +x {path.name}, or run it through its interpreter (python3 {path.name})"))
     if event in GATE_EVENTS and path.is_file():
-        verdict = _script_can_block(path)
-        if verdict is False:
+        verdict = _script_can_block(path, event)
+        if verdict is False and event == "PermissionRequest":
+            issues.append(("warning", "hook.cannot-block",
+                           f"PermissionRequest hook script '{path.name}' never prints a decision "
+                           "object, so it cannot deny anything: this event ignores exit 2 and "
+                           "permissionDecision",
+                           "print {\"hookSpecificOutput\": {\"hookEventName\": \"PermissionRequest\", "
+                           "\"decision\": {\"behavior\": \"deny\", \"message\": ...}}} and exit 0"))
+        elif verdict is False:
             issues.append(("warning", "hook.cannot-block",
                            f"{event} hook script '{path.name}' never exits 2 or prints a permission "
                            "decision, so it cannot block anything; exit 1 is a non-blocking error "
@@ -325,14 +332,17 @@ def _inside_double_quotes(text: str, pos: int) -> bool:
     return inside
 
 
-def _script_can_block(path: Path) -> Optional[bool]:
-    """True/False when the script clearly can/cannot block; None when unknown."""
+def _script_can_block(path: Path, event: str) -> Optional[bool]:
+    """True/False when the script clearly can/cannot block `event`; None when unknown."""
     try:
         if path.stat().st_size > _MAX_SCRIPT_BYTES:
             return None
         source = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+    if event == "PermissionRequest":
+        # Exit 2 and permissionDecision do nothing here; only decision.behavior denies.
+        return bool(re.search(r"\bbehavior\b", source))
     blocking = re.search(
         r"(sys\.exit\(\s*2\s*\)|exit\(\s*2\s*\)|\bexit\s+2\b|process\.exit(Code)?\s*[=(]\s*2|"
         r"os\._exit\(\s*2\s*\)|permissionDecision|\"decision\"\s*:|'decision'\s*:|\bdecision\s*=|"

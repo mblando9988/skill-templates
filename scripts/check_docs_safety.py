@@ -14,7 +14,7 @@ Responsibilities:
   payload spliced into shell text, eval / pipe-to-shell, cwd-relative script
   paths, unquoted path placeholders, scripts that cannot start, and gate
   scripts that can never block (exit 1 does not block; only exit 2 or a
-  JSON deny decision does).
+  JSON deny decision does, and PermissionRequest honors only the JSON).
 
 Usage:
     python3 check_docs_safety.py PATH [PATH ...] [--strict] [--json] [--quiet]

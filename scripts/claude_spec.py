@@ -247,7 +247,8 @@ HOOK_EVENTS: Dict[str, bool] = {
 # Events whose matcher is a tool name, and where a handler's `if` rule applies.
 TOOL_EVENTS = frozenset({"PreToolUse", "PostToolUse", "PostToolUseFailure",
                          "PermissionRequest", "PermissionDenied"})
-# Events a command hook usually exists to gate; exit 2 (or a JSON decision) blocks them.
+# Events a command hook usually exists to gate: exit 2 or a JSON decision blocks them,
+# except PermissionRequest, which ignores exit 2 and denies only via decision.behavior.
 GATE_EVENTS = frozenset({"PreToolUse", "PermissionRequest", "UserPromptSubmit",
                          "UserPromptExpansion", "Stop", "SubagentStop", "PreModelSwitch"})
 
