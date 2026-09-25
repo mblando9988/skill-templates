@@ -244,30 +244,56 @@ def _strip_leading_blank_lines(text: str) -> Optional[str]:
 
 
 def resolve_intent(jobs: List[FileJob], engines: Engines) -> None:
-    """Parse every frontmatter with both parsers and decide the intended data."""
+    """Parse every frontmatter with both parsers and decide the intended data.
+
+    YAML that npm builds reject is repaired one line at a time: the line the
+    parser reports gets Claude Code's own fallback quoting (what v2.1.x does
+    after a failed parse), and parsing is retried. Lines that parse keep
+    their meaning, so comments stay comments.
+    """
     todo = [j for j in jobs if j.status == "pending" and j.yaml_text is not None]
-    results = engines.parse_many([j.yaml_text for j in todo], positions=False)
-    retry: List[Tuple[FileJob, str]] = []
-    for job, (npm, native) in zip(todo, results):
-        if npm.ok:
-            _accept(job, npm, native)
-        elif npm.code == "DUPLICATE_KEY":
-            job.status, job.error = "error", "duplicate keys: decide which value to keep by hand"
-        else:
-            repaired = claude_code_fallback_quote(job.yaml_text)
-            if repaired == job.yaml_text:
-                job.status, job.error = "error", f"frontmatter YAML does not parse: {npm.message} (line {npm.line})"
-            else:
-                retry.append((job, repaired))
-    if retry:
-        again = engines.parse_many([text for _job, text in retry], positions=False)
-        for (job, repaired), (npm, native) in zip(retry, again):
+    repaired = set()
+    for _round in range(12):
+        if not todo:
+            return
+        results = engines.parse_many([j.yaml_text for j in todo], positions=False)
+        retry: List[FileJob] = []
+        for job, (npm, native) in zip(todo, results):
             if npm.ok:
-                job.notes.append("quoted values that only loaded through Claude Code's fallback parser")
-                job.yaml_text = repaired
+                if id(job) in repaired:
+                    job.notes.append("quoted values that only loaded through Claude Code's fallback parser")
                 _accept(job, npm, native)
-            else:
-                job.status, job.error = "error", f"frontmatter YAML does not parse: {npm.message}"
+                continue
+            if npm.code == "DUPLICATE_KEY":
+                job.status, job.error = "error", "duplicate keys: decide which value to keep by hand"
+                continue
+            fixed = None
+            for line_no in (npm.line, (npm.line or 0) - 1):
+                fixed = _fallback_line(job.yaml_text, line_no) if line_no else None
+                if fixed is not None:
+                    break
+            if fixed is None:
+                job.status = "error"
+                job.error = f"frontmatter YAML does not parse: {npm.message} (frontmatter line {npm.line})"
+                continue
+            job.yaml_text = fixed
+            repaired.add(id(job))
+            retry.append(job)
+        todo = retry
+    for job in todo:
+        job.status, job.error = "error", "frontmatter YAML still does not parse after quoting; fix it by hand"
+
+
+def _fallback_line(yaml_text: str, line_no: int) -> Optional[str]:
+    """Apply Claude Code's fallback quoting to one line, or None if it changes nothing."""
+    lines = yaml_text.split("\n")
+    if not 1 <= line_no <= len(lines):
+        return None
+    fixed = claude_code_fallback_quote(lines[line_no - 1])
+    if fixed == lines[line_no - 1]:
+        return None
+    lines[line_no - 1] = fixed
+    return "\n".join(lines)
 
 
 def _accept(job: FileJob, npm: ParseResult, native: ParseResult) -> None:

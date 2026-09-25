@@ -63,10 +63,11 @@ def decide(event: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     event is the parsed stdin payload. Treat every value as untrusted text:
     inspect it, never execute it.
     """
-    tool_name = event.get("tool_name")
-    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
-    if tool_name != "{{ToolName}}":
+    if event.get("tool_name") != "{{ToolName}}":
         return "allow", None
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return "deny", "tool call without tool_input"
     # {{Example: block writes outside the project}}
     # path = tool_input.get("file_path")
     # if isinstance(path, str) and not path.startswith(event.get("cwd", "")):
