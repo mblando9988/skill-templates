@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "{{plugin-name}}",
+  "version": "0.1.0",
+  "description": "{{What the plugin adds: its skills, agents, MCP servers and hooks, in one sentence}}",
+  "author": { "name": "{{Your Name}}" },
+  "license": "MIT",
+  "keywords": ["{{keyword}}"]
+}

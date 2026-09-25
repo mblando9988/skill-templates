@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "docs-toolkit",
+  "displayName": "Docs Toolkit",
+  "version": "1.0.0",
+  "description": "Read-only access to a project's docs/ folder through a bundled MCP server, a skill that answers from it, and a researcher agent that preloads that skill.",
+  "license": "MIT",
+  "keywords": ["docs", "mcp", "research"]
+}

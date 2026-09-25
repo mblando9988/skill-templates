@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "{{server}}": {
+      "command": "npx",
+      "args": ["-y", "{{@scope/mcp-server}}@{{exact-version}}"],
+      "env": { "{{API_TOKEN}}": "${{{API_TOKEN}}}" }
+    }
+  }
+}

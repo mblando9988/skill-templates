@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "skill-templates",
+  "displayName": "Skill Templates",
+  "version": "1.0.0",
+  "description": "Templates, reference examples and hardened scripts for writing Claude Code skills, subagents and plugins that load the same way in every Claude Code build.",
+  "license": "MIT",
+  "keywords": ["skills", "subagents", "plugins", "templates", "validation"]
+}
